@@ -36,6 +36,9 @@
     <li>✊ Kepal → hati pink</li>
     <li>✌️ Dua jari → tulisan I LOVE YOU</li>
     <li>☝️ Satu jari → Saturnus 3D</li>
+    <li>👍 Jempol → bintang</li>
+    <li>🤟 Rock (telunjuk + kelingking) → bunga</li>
+    <li>🤞 Tiga jari (tanpa kelingking) → galaksi</li>
   </ul>
   <p>Arahkan satu tangan ke kamera depan. Semua diproses di HP kamu, tidak ada video yang dikirim ke mana pun.</p>
   <button id="go">Mulai kamera</button>
@@ -68,6 +71,15 @@
   const sx = new Float32Array(N), sy = new Float32Array(N);       // scatter base (0..1)
   const hx = new Float32Array(N), hy = new Float32Array(N);       // heart (normalized)
   const tx = new Float32Array(N), ty = new Float32Array(N);       // text (normalized)
+  const stx = new Float32Array(N), sty = new Float32Array(N);       // star
+  const flx = new Float32Array(N), fly = new Float32Array(N);       // flower
+  const galR = new Float32Array(N), galT = new Float32Array(N);     // galaxy
+  const fixC = { star: new Float32Array(N * 3), flower: new Float32Array(N * 3), galaxy: new Float32Array(N * 3) };
+  function hsl(h, s, l) {
+    h = (((h % 360) + 360) % 360); const a = s * Math.min(l, 1 - l);
+    const f = n => { const k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+    return [f(0) * 255, f(8) * 255, f(4) * 255];
+  }
   const sat = [];                                                  // saturn base 3D
   const COL = {
     scatter: [74, 144, 255], heart: [255, 45, 122], text: [34, 211, 238],
@@ -89,6 +101,26 @@
       sat.push({ x: 0.45 * r * Math.cos(a), y: 0.45 * u, z: 0.45 * r * Math.sin(a), ring: false, th: 0, rad: 0 });
     } else {
       sat.push({ ring: true, th: rnd() * Math.PI * 2, rad: 0.7 + rnd() * 0.5, y0: (rnd() - 0.5) * 0.02 });
+    }
+    { // bintang
+      const V = []; for (let v = 0; v < 10; v++) { const a = -Math.PI / 2 + v * Math.PI / 5, r = v % 2 ? 0.42 : 1; V.push([r * Math.cos(a), r * Math.sin(a)]); }
+      const e = (rnd() * 10) | 0, A = V[e], B = V[(e + 1) % 10], u = rnd();
+      const k = rnd() < 0.65 ? 1 : Math.sqrt(rnd()) * 0.9;
+      stx[i] = (A[0] + (B[0] - A[0]) * u) * k * 0.95; sty[i] = (A[1] + (B[1] - A[1]) * u) * k * 0.95;
+      fixC.star[i * 3] = 255; fixC.star[i * 3 + 1] = 190 + rnd() * 60; fixC.star[i * 3 + 2] = 30 + rnd() * 70;
+    }
+    { // bunga
+      const th = rnd() * Math.PI * 2, r = 0.25 + 0.75 * Math.abs(Math.cos(3 * th));
+      const u = rnd() < 0.55 ? 1 - rnd() * 0.08 : Math.sqrt(rnd());
+      flx[i] = r * u * Math.cos(th); fly[i] = r * u * Math.sin(th);
+      const c = hsl(50 + r * u * 280, 0.95, 0.58);
+      fixC.flower[i * 3] = c[0]; fixC.flower[i * 3 + 1] = c[1]; fixC.flower[i * 3 + 2] = c[2];
+    }
+    { // galaksi
+      const r = Math.pow(rnd(), 0.75);
+      galR[i] = r; galT[i] = (i % 2) * Math.PI + r * 5.5 + (rnd() - 0.5) * 0.6;
+      const c = r < 0.15 ? [255, 235, 190] : hsl(285 - r * 90, 0.85, 0.45 + (1 - r) * 0.3);
+      fixC.galaxy[i * 3] = c[0]; fixC.galaxy[i * 3 + 1] = c[1]; fixC.galaxy[i * 3 + 2] = c[2];
     }
     cr[i] = COL.scatter[0]; cg[i] = COL.scatter[1]; cb[i] = COL.scatter[2];
   }
@@ -123,18 +155,29 @@
   function classify(l) {
     const idx = ext(l, 8, 6), mid = ext(l, 12, 10), rng = ext(l, 16, 14), pky = ext(l, 20, 18);
     const n = idx + mid + rng + pky;
-    if (n === 0) return 'heart';
+    const size = dist(l[0], l[9]);
+    if (n === 0) return (l[4].y < l[5].y - 0.25 * size && l[4].y < l[3].y) ? 'star' : 'heart';
     if (idx && !mid && !rng && !pky) return 'saturn';
     if (idx && mid && !rng && !pky) return 'text';
-    if (n >= 3) return 'scatter';
+    if (idx && !mid && !rng && pky) return 'flower';
+    if (idx && mid && rng && !pky) return 'galaxy';
+    if (n === 4) return 'scatter';
     return null;
   }
 
   const LABELS = {
     scatter: 'MODE: TERBUKA (Partikel)', heart: 'MODE: HATI / LOVE (Kepal)',
-    text: 'MODE: I LOVE YOU (Peace)', saturn: 'MODE: SATURNUS 3D (Satu Jari)', none: 'MODE: MENUNGGU TANGAN'
+    text: 'MODE: I LOVE YOU (Peace)', saturn: 'MODE: SATURNUS 3D (Satu Jari)',
+    star: 'MODE: BINTANG (Jempol)', flower: 'MODE: BUNGA (Rock)', galaxy: 'MODE: GALAKSI (Tiga Jari)', none: 'MODE: MENUNGGU TANGAN'
   };
   function setLabel(m) { label.textContent = LABELS[m] || LABELS.none; }
+
+  let tipX = 0, tipY = 0;
+  function setMode(m) {
+    if (m === mode) return;
+    mode = m;
+    for (let i = 0; i < N; i++) { vx[i] += (rnd() - 0.5) * 36; vy[i] += (rnd() - 0.5) * 36; }  // ledakan
+  }
 
   function onResults(res) {
     // preview
@@ -149,7 +192,7 @@
     cctx.restore();
 
     const lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
-    if (!lm) { hand = null; pending = 'scatter'; pendingCount = 0; mode = 'scatter'; setLabel('none'); return; }
+    if (!lm) { hand = null; pending = 'scatter'; pendingCount = 0; setMode('scatter'); setLabel('none'); return; }
 
     // map to preview coords (cover-fit) and draw skeleton
     const s = vw ? Math.max(cam.width / vw, cam.height / vh) : 1;
@@ -166,10 +209,11 @@
     lm.forEach(p => { const P = toPrev(p); cctx.beginPath(); cctx.arc(P[0], P[1], 3.5, 0, 7); cctx.fill(); });
 
     hand = lm;
+    tipX = (facing === 'user' ? 1 - lm[8].x : lm[8].x) * W; tipY = lm[8].y * H;
     const g = classify(lm);
     if (g) {
       if (g === pending) pendingCount++; else { pending = g; pendingCount = 1; }
-      if (pendingCount >= 3 && g !== mode) { mode = g; }
+      if (pendingCount >= 3) setMode(g);
     }
     setLabel(mode);
 
@@ -197,8 +241,18 @@
     const cosX = Math.cos(1.05), sinX = Math.sin(1.05), cosZ = Math.cos(-0.35), sinZ = Math.sin(-0.35);
 
     for (let i = 0; i < N; i++) {
-      let X, Y, col;
-      if (mode === 'heart') {
+      let X, Y, col, fc = null;
+      if (mode === 'star') {
+        const pu = 1 + 0.04 * Math.sin(time * 3);
+        X = ccx + stx[i] * base * 1.1 * pu; Y = ccy + sty[i] * base * 1.1 * pu; fc = fixC.star;
+      } else if (mode === 'flower') {
+        const a = time * 0.3, ca = Math.cos(a), sa = Math.sin(a);
+        X = ccx + (flx[i] * ca - fly[i] * sa) * base * 1.2; Y = ccy + (flx[i] * sa + fly[i] * ca) * base * 1.2; fc = fixC.flower;
+      } else if (mode === 'galaxy') {
+        const a = galT[i] + time * 0.5, r = galR[i];
+        const gx = r * Math.cos(a), gy = r * Math.sin(a) * 0.55, ct = Math.cos(-0.4), st = Math.sin(-0.4);
+        X = ccx + (gx * ct - gy * st) * base * 1.6; Y = ccy + (gx * st + gy * ct) * base * 1.6; fc = fixC.galaxy;
+      } else if (mode === 'heart') {
         X = ccx + hx[i] * base * 1.1; Y = ccy + hy[i] * base * 1.1; col = COL.heart;
       } else if (mode === 'text') {
         X = ccx + tx[i] * base * 1.1; Y = ccy + ty[i] * base * 1.1; col = COL.text;
@@ -216,12 +270,18 @@
         const x3 = x1 * cosZ - y2 * sinZ, y3 = x1 * sinZ + y2 * cosZ;
         X = ccx + x3 * base * 1.5; Y = ccy + y3 * base * 1.5;
       } else {
-        X = sx[i] * W + Math.sin(time * 0.6 + i) * 6; Y = sy[i] * H + Math.cos(time * 0.5 + i * 1.3) * 6; col = COL.scatter;
+        X = sx[i] * W + Math.sin(time * 0.6 + i) * 6; Y = sy[i] * H + Math.cos(time * 0.5 + i * 1.3) * 6;
+        col = hsl(215 + 70 * Math.sin(time * 0.4 + sx[i] * 3), 0.9, 0.6);       // warna berganti
+        if (hand) {                                                              // partikel mengikuti jari telunjuk
+          const dx = X - tipX, dy = Y - tipY, d = Math.hypot(dx, dy);
+          if (d < 160) { const k = 0.25 + 0.75 * (d / 160); X = tipX + dx * k; Y = tipY + dy * k; }
+        }
       }
       vx[i] += (X - px[i]) * 0.09; vy[i] += (Y - py[i]) * 0.09;
       vx[i] *= 0.8; vy[i] *= 0.8;
       px[i] += vx[i]; py[i] += vy[i];
-      cr[i] += (col[0] - cr[i]) * 0.12; cg[i] += (col[1] - cg[i]) * 0.12; cb[i] += (col[2] - cb[i]) * 0.12;
+      const t0 = fc ? fc[i * 3] : col[0], t1 = fc ? fc[i * 3 + 1] : col[1], t2 = fc ? fc[i * 3 + 2] : col[2];
+      cr[i] += (t0 - cr[i]) * 0.12; cg[i] += (t1 - cg[i]) * 0.12; cb[i] += (t2 - cb[i]) * 0.12;
       ctx.fillStyle = `rgb(${cr[i] | 0},${cg[i] | 0},${cb[i] | 0})`;
       ctx.fillRect(px[i], py[i], 2.6, 2.6);
     }
