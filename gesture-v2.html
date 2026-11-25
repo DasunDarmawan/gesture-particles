@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Gesture Particles</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; font-family: system-ui, sans-serif; touch-action:none; }
+  canvas#fx { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #cam { position:fixed; left:max(10px, env(safe-area-inset-left)); top:max(10px, env(safe-area-inset-top)); width:112px; height:150px;
+         border:2px solid #333; border-radius:10px; background:#111; }
+  #label { position:fixed; left:max(10px, env(safe-area-inset-left)); top:calc(max(10px, env(safe-area-inset-top)) + 160px);
+           color:#39ff6a; font:700 12px/1.3 ui-monospace, monospace; max-width:150px; text-shadow:0 0 4px #000; }
+  #flip { position:fixed; right:max(10px, env(safe-area-inset-right)); top:max(10px, env(safe-area-inset-top)); background:#1b1b1b; color:#fff;
+          border:1px solid #444; border-radius:999px; padding:8px 14px; font-size:13px; display:none; }
+  #start { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
+           background:#000; color:#fff; text-align:center; padding:24px; }
+  #start h1 { margin:0; font-size:22px; }
+  #start p { margin:0; color:#aaa; font-size:14px; line-height:1.5; max-width:320px; }
+  #go { background:#4a90ff; color:#fff; border:0; border-radius:12px; padding:14px 28px; font-size:16px; font-weight:600; }
+  #err { color:#ff6b6b; font-size:13px; max-width:320px; }
+  ul { list-style:none; padding:0; margin:0; color:#ddd; font-size:14px; line-height:1.8; text-align:left; }
+</style>
+</head>
+<body>
+<canvas id="fx"></canvas>
+<canvas id="cam" width="224" height="300"></canvas>
+<div id="label">MODE: MENUNGGU TANGAN</div>
+<button id="flip">Ganti kamera</button>
+<video id="vid" playsinline muted autoplay style="display:none"></video>
+
+<div id="start">
+  <h1>Gesture Particles</h1>
+  <ul>
+    <li>✋ Telapak terbuka → partikel biru</li>
+    <li>✊ Kepal → hati pink</li>
+    <li>✌️ Dua jari → tulisan I LOVE YOU</li>
+    <li>☝️ Satu jari → Saturnus 3D</li>
+    <li>👍 Jempol → bintang</li>
+    <li>🤟 Rock (telunjuk + kelingking) → bunga</li>
+    <li>🤞 Tiga jari (tanpa kelingking) → galaksi</li>
+  </ul>
+  <p>Arahkan satu tangan ke kamera depan. Semua diproses di HP kamu, tidak ada video yang dikirim ke mana pun.</p>
+  <button id="go">Mulai kamera</button>
+  <div id="err"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script>
+(() => {
+  const fx = document.getElementById('fx'), ctx = fx.getContext('2d');
+  const cam = document.getElementById('cam'), cctx = cam.getContext('2d');
+  const vid = document.getElementById('vid');
+  const label = document.getElementById('label');
+  const startEl = document.getElementById('start'), errEl = document.getElementById('err');
+  const flipBtn = document.getElementById('flip');
+
+  let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+  function resize() {
+    W = innerWidth; H = innerHeight;
+    fx.width = W * DPR; fx.height = H * DPR;
+    buildText();
+  }
+
+  // ---------- Particles ----------
+  const N = 1400;
+  const px = new Float32Array(N), py = new Float32Array(N), vx = new Float32Array(N), vy = new Float32Array(N);
+  const cr = new Float32Array(N), cg = new Float32Array(N), cb = new Float32Array(N);
+  const rnd = () => Math.random();
+  // base data per particle
+  const sx = new Float32Array(N), sy = new Float32Array(N);       // scatter base (0..1)
+  const hx = new Float32Array(N), hy = new Float32Array(N);       // heart (normalized)
+  const tx = new Float32Array(N), ty = new Float32Array(N);       // text (normalized)
+  const stx = new Float32Array(N), sty = new Float32Array(N);       // star
+  const flx = new Float32Array(N), fly = new Float32Array(N);       // flower
+  const galR = new Float32Array(N), galT = new Float32Array(N);     // galaxy
+  const fixC = { star: new Float32Array(N * 3), flower: new Float32Array(N * 3), galaxy: new Float32Array(N * 3) };
+  function hsl(h, s, l) {
+    h = (((h % 360) + 360) % 360); const a = s * Math.min(l, 1 - l);
+    const f = n => { const k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+    return [f(0) * 255, f(8) * 255, f(4) * 255];
+  }
+  const sat = [];                                                  // saturn base 3D
+  const COL = {
+    scatter: [74, 144, 255], heart: [255, 45, 122], text: [34, 211, 238],
+    planet: [255, 138, 31], ring: [217, 160, 102]
+  };
+
+  for (let i = 0; i < N; i++) {
+    px[i] = rnd() * innerWidth; py[i] = rnd() * innerHeight;
+    sx[i] = rnd(); sy[i] = rnd();
+    // heart: outline + some fill
+    const t = rnd() * Math.PI * 2;
+    let x = 16 * Math.pow(Math.sin(t), 3);
+    let y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+    const k = rnd() < 0.75 ? 1 - rnd() * 0.08 : Math.sqrt(rnd()) * 0.95;
+    hx[i] = (x * k) / 17; hy[i] = (-(y - 2) * k) / 17;
+    // saturn
+    if (i < N * 0.4) {
+      const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, r = Math.sqrt(1 - u * u);
+      sat.push({ x: 0.45 * r * Math.cos(a), y: 0.45 * u, z: 0.45 * r * Math.sin(a), ring: false, th: 0, rad: 0 });
+    } else {
+      sat.push({ ring: true, th: rnd() * Math.PI * 2, rad: 0.7 + rnd() * 0.5, y0: (rnd() - 0.5) * 0.02 });
+    }
+    { // bintang
+      const V = []; for (let v = 0; v < 10; v++) { const a = -Math.PI / 2 + v * Math.PI / 5, r = v % 2 ? 0.42 : 1; V.push([r * Math.cos(a), r * Math.sin(a)]); }
+      const e = (rnd() * 10) | 0, A = V[e], B = V[(e + 1) % 10], u = rnd();
+      const k = rnd() < 0.65 ? 1 : Math.sqrt(rnd()) * 0.9;
+      stx[i] = (A[0] + (B[0] - A[0]) * u) * k * 0.95; sty[i] = (A[1] + (B[1] - A[1]) * u) * k * 0.95;
+      fixC.star[i * 3] = 255; fixC.star[i * 3 + 1] = 190 + rnd() * 60; fixC.star[i * 3 + 2] = 30 + rnd() * 70;
+    }
+    { // bunga
+      const th = rnd() * Math.PI * 2, r = 0.25 + 0.75 * Math.abs(Math.cos(3 * th));
+      const u = rnd() < 0.55 ? 1 - rnd() * 0.08 : Math.sqrt(rnd());
+      flx[i] = r * u * Math.cos(th); fly[i] = r * u * Math.sin(th);
+      const c = hsl(50 + r * u * 280, 0.95, 0.58);
+      fixC.flower[i * 3] = c[0]; fixC.flower[i * 3 + 1] = c[1]; fixC.flower[i * 3 + 2] = c[2];
+    }
+    { // galaksi
+      const r = Math.pow(rnd(), 0.75);
+      galR[i] = r; galT[i] = (i % 2) * Math.PI + r * 5.5 + (rnd() - 0.5) * 0.6;
+      const c = r < 0.15 ? [255, 235, 190] : hsl(285 - r * 90, 0.85, 0.45 + (1 - r) * 0.3);
+      fixC.galaxy[i * 3] = c[0]; fixC.galaxy[i * 3 + 1] = c[1]; fixC.galaxy[i * 3 + 2] = c[2];
+    }
+    cr[i] = COL.scatter[0]; cg[i] = COL.scatter[1]; cb[i] = COL.scatter[2];
+  }
+
+  function buildText() {
+    const w = 360, h = 360, c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = '900 120px Arial Black, Impact, sans-serif';
+    g.fillText('I LOVE', w / 2, h / 2 - 62);
+    g.fillText('YOU', w / 2, h / 2 + 62);
+    const d = g.getImageData(0, 0, w, h).data, pts = [];
+    for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) if (d[(y * w + x) * 4 + 3] > 128) pts.push([x, y]);
+    for (let i = pts.length - 1; i > 0; i--) { const j = (rnd() * (i + 1)) | 0; [pts[i], pts[j]] = [pts[j], pts[i]]; }
+    for (let i = 0; i < N; i++) {
+      const p = pts[i % pts.length];
+      tx[i] = (p[0] - w / 2) / (w / 2) + (rnd() - 0.5) * 0.01;
+      ty[i] = (p[1] - h / 2) / (w / 2) + (rnd() - 0.5) * 0.01;
+    }
+  }
+
+  // ---------- Gesture ----------
+  let mode = 'scatter', pending = 'scatter', pendingCount = 0;
+  let hand = null;                     // landmarks (mirrored x already if front cam)
+  let cx = 0.5, cy = 0.5, sc = 1;      // smoothed hand centre (0..1) and scale
+  let tcx = 0.5, tcy = 0.5, tsc = 1;
+  let facing = 'user';
+
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  function ext(l, tip, pip) { return dist(l[tip], l[0]) > dist(l[pip], l[0]) * 1.08; }
+
+  function classify(l) {
+    const idx = ext(l, 8, 6), mid = ext(l, 12, 10), rng = ext(l, 16, 14), pky = ext(l, 20, 18);
+    const n = idx + mid + rng + pky;
+    const size = dist(l[0], l[9]);
+    if (n === 0) return (l[4].y < l[5].y - 0.25 * size && l[4].y < l[3].y) ? 'star' : 'heart';
+    if (idx && !mid && !rng && !pky) return 'saturn';
+    if (idx && mid && !rng && !pky) return 'text';
+    if (idx && !mid && !rng && pky) return 'flower';
+    if (idx && mid && rng && !pky) return 'galaxy';
+    if (n === 4) return 'scatter';
+    return null;
+  }
+
+  const LABELS = {
+    scatter: 'MODE: TERBUKA (Partikel)', heart: 'MODE: HATI / LOVE (Kepal)',
+    text: 'MODE: I LOVE YOU (Peace)', saturn: 'MODE: SATURNUS 3D (Satu Jari)',
+    star: 'MODE: BINTANG (Jempol)', flower: 'MODE: BUNGA (Rock)', galaxy: 'MODE: GALAKSI (Tiga Jari)', none: 'MODE: MENUNGGU TANGAN'
+  };
+  function setLabel(m) { label.textContent = LABELS[m] || LABELS.none; }
+
+  let tipX = 0, tipY = 0;
+  function setMode(m) {
+    if (m === mode) return;
+    mode = m;
+    for (let i = 0; i < N; i++) { vx[i] += (rnd() - 0.5) * 36; vy[i] += (rnd() - 0.5) * 36; }  // ledakan
+  }
+
+  function onResults(res) {
+    // preview
+    cctx.save();
+    cctx.clearRect(0, 0, cam.width, cam.height);
+    const vw = vid.videoWidth, vh = vid.videoHeight;
+    if (vw) {
+      const s = Math.max(cam.width / vw, cam.height / vh), dw = vw * s, dh = vh * s;
+      if (facing === 'user') { cctx.translate(cam.width, 0); cctx.scale(-1, 1); }
+      cctx.drawImage(vid, (cam.width - dw) / 2, (cam.height - dh) / 2, dw, dh);
+    }
+    cctx.restore();
+
+    const lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
+    if (!lm) { hand = null; pending = 'scatter'; pendingCount = 0; setMode('scatter'); setLabel('none'); return; }
+
+    // map to preview coords (cover-fit) and draw skeleton
+    const s = vw ? Math.max(cam.width / vw, cam.height / vh) : 1;
+    const dw = vw * s, dh = vh * s, ox = (cam.width - dw) / 2, oy = (cam.height - dh) / 2;
+    const toPrev = p => {
+      let x = p.x * dw + ox; const y = p.y * dh + oy;
+      if (facing === 'user') x = cam.width - x;
+      return [x, y];
+    };
+    const CONN = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+    cctx.strokeStyle = '#fff'; cctx.lineWidth = 2;
+    CONN.forEach(([a, b]) => { const A = toPrev(lm[a]), B = toPrev(lm[b]); cctx.beginPath(); cctx.moveTo(A[0], A[1]); cctx.lineTo(B[0], B[1]); cctx.stroke(); });
+    cctx.fillStyle = '#ff2d4a';
+    lm.forEach(p => { const P = toPrev(p); cctx.beginPath(); cctx.arc(P[0], P[1], 3.5, 0, 7); cctx.fill(); });
+
+    hand = lm;
+    tipX = (facing === 'user' ? 1 - lm[8].x : lm[8].x) * W; tipY = lm[8].y * H;
+    const g = classify(lm);
+    if (g) {
+      if (g === pending) pendingCount++; else { pending = g; pendingCount = 1; }
+      if (pendingCount >= 3) setMode(g);
+    }
+    setLabel(mode);
+
+    // palm centre + scale (0..1 screen space)
+    const palm = [0, 5, 9, 13, 17].reduce((a, i) => ({ x: a.x + lm[i].x / 5, y: a.y + lm[i].y / 5 }), { x: 0, y: 0 });
+    tcx = facing === 'user' ? 1 - palm.x : palm.x;
+    tcy = palm.y;
+    const size = dist(lm[0], lm[9]);
+    tsc = Math.min(1.5, Math.max(0.6, size / 0.2));
+  }
+
+  // ---------- Render loop ----------
+  function frame(t) {
+    requestAnimationFrame(frame);
+    cx += (tcx - cx) * 0.2; cy += (tcy - cy) * 0.2; sc += (tsc - sc) * 0.15;
+    if (!hand) { cx += (0.5 - cx) * 0.05; cy += (0.5 - cy) * 0.05; sc += (1 - sc) * 0.05; }
+
+    const time = t / 1000, base = Math.min(W, H) * 0.42 * sc;
+    const ccx = cx * W, ccy = cy * H;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(0, 0, fx.width, fx.height);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    const cosX = Math.cos(1.05), sinX = Math.sin(1.05), cosZ = Math.cos(-0.35), sinZ = Math.sin(-0.35);
+
+    for (let i = 0; i < N; i++) {
+      let X, Y, col, fc = null;
+      if (mode === 'star') {
+        const pu = 1 + 0.04 * Math.sin(time * 3);
+        X = ccx + stx[i] * base * 1.1 * pu; Y = ccy + sty[i] * base * 1.1 * pu; fc = fixC.star;
+      } else if (mode === 'flower') {
+        const a = time * 0.3, ca = Math.cos(a), sa = Math.sin(a);
+        X = ccx + (flx[i] * ca - fly[i] * sa) * base * 1.2; Y = ccy + (flx[i] * sa + fly[i] * ca) * base * 1.2; fc = fixC.flower;
+      } else if (mode === 'galaxy') {
+        const a = galT[i] + time * 0.5, r = galR[i];
+        const gx = r * Math.cos(a), gy = r * Math.sin(a) * 0.55, ct = Math.cos(-0.4), st = Math.sin(-0.4);
+        X = ccx + (gx * ct - gy * st) * base * 1.6; Y = ccy + (gx * st + gy * ct) * base * 1.6; fc = fixC.galaxy;
+      } else if (mode === 'heart') {
+        X = ccx + hx[i] * base * 1.1; Y = ccy + hy[i] * base * 1.1; col = COL.heart;
+      } else if (mode === 'text') {
+        X = ccx + tx[i] * base * 1.1; Y = ccy + ty[i] * base * 1.1; col = COL.text;
+      } else if (mode === 'saturn') {
+        const p = sat[i]; let x, y, z;
+        if (p.ring) {
+          const th = p.th + time * 0.35;
+          x = p.rad * Math.cos(th); y = p.y0; z = p.rad * Math.sin(th); col = COL.ring;
+        } else { x = p.x; y = p.y; z = p.z; col = COL.planet; }
+        // spin around Y
+        const a = time * 0.25, ca = Math.cos(a), sa = Math.sin(a);
+        const x1 = x * ca + z * sa, z1 = -x * sa + z * ca;
+        // tilt about X then Z
+        const y2 = y * cosX - z1 * sinX;
+        const x3 = x1 * cosZ - y2 * sinZ, y3 = x1 * sinZ + y2 * cosZ;
+        X = ccx + x3 * base * 1.5; Y = ccy + y3 * base * 1.5;
+      } else {
+        X = sx[i] * W + Math.sin(time * 0.6 + i) * 6; Y = sy[i] * H + Math.cos(time * 0.5 + i * 1.3) * 6;
+        col = hsl(215 + 70 * Math.sin(time * 0.4 + sx[i] * 3), 0.9, 0.6);       // warna berganti
+        if (hand) {                                                              // partikel mengikuti jari telunjuk
+          const dx = X - tipX, dy = Y - tipY, d = Math.hypot(dx, dy);
+          if (d < 160) { const k = 0.25 + 0.75 * (d / 160); X = tipX + dx * k; Y = tipY + dy * k; }
+        }
+      }
+      vx[i] += (X - px[i]) * 0.09; vy[i] += (Y - py[i]) * 0.09;
+      vx[i] *= 0.8; vy[i] *= 0.8;
+      px[i] += vx[i]; py[i] += vy[i];
+      const t0 = fc ? fc[i * 3] : col[0], t1 = fc ? fc[i * 3 + 1] : col[1], t2 = fc ? fc[i * 3 + 2] : col[2];
+      cr[i] += (t0 - cr[i]) * 0.12; cg[i] += (t1 - cg[i]) * 0.12; cb[i] += (t2 - cb[i]) * 0.12;
+      ctx.fillStyle = `rgb(${cr[i] | 0},${cg[i] | 0},${cb[i] | 0})`;
+      ctx.fillRect(px[i], py[i], 2.6, 2.6);
+    }
+  }
+
+  // ---------- Camera + MediaPipe ----------
+  let hands = null, stream = null, running = false, busy = false;
+
+  async function openCamera() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
+    });
+    vid.srcObject = stream;
+    await vid.play();
+  }
+
+  async function loop() {
+    if (!running) return;
+    if (vid.readyState >= 2 && !busy) {
+      busy = true;
+      try { await hands.send({ image: vid }); } catch (e) {}
+      busy = false;
+    }
+    requestAnimationFrame(loop);
+  }
+
+  document.getElementById('go').onclick = async () => {
+    errEl.textContent = '';
+    if (!window.Hands) { errEl.textContent = 'Library MediaPipe gagal dimuat. Cek koneksi internet lalu muat ulang.'; return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      errEl.textContent = 'Kamera hanya bisa dipakai lewat https:// atau localhost, bukan file lokal.'; return;
+    }
+    try {
+      await openCamera();
+      hands = new Hands({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f });
+      hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
+      hands.onResults(onResults);
+      startEl.style.display = 'none'; flipBtn.style.display = 'block';
+      running = true; loop();
+    } catch (e) {
+      errEl.textContent = 'Kamera tidak bisa dibuka: ' + (e.message || e.name) + '. Izinkan akses kamera di browser.';
+    }
+  };
+
+  flipBtn.onclick = async () => {
+    facing = facing === 'user' ? 'environment' : 'user';
+    try { await openCamera(); } catch (e) { facing = facing === 'user' ? 'environment' : 'user'; }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
